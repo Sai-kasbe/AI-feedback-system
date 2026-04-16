@@ -1,12 +1,13 @@
 import smtplib
+import os
 from email.mime.text import MIMEText
 
 def send_email(msg_text):
-    sender = "your_email@gmail.com"
-    password = "your_app_password"
+    sender = os.getenv("EMAIL_USER")
+    password = os.getenv("EMAIL_PASS")
 
     msg = MIMEText(msg_text)
-    msg['Subject'] = "Event Alert"
+    msg['Subject'] = "⚠️ Event Feedback Alert"
     msg['From'] = sender
     msg['To'] = sender
 
