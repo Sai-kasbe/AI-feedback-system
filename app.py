@@ -1,132 +1,155 @@
 import streamlit as st
 import pandas as pd
-from database import *
-from agent import *
-from translator import translate
-from report import generate_pdf
-from alerts import check_alert
-from score import event_score
-from email_alert import send_email
-from form_builder import *
+import numpy as np
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-
-create_tables()
-
-if "fields" not in st.session_state:
-    st.session_state.fields = []
-
-analyzer = SentimentIntensityAnalyzer()
-
-def analyze(text):
-    score = analyzer.polarity_scores(text)['compound']
-    if score >= 0.05:
-        return "Positive", score
-    elif score <= -0.05:
-        return "Negative", score
-    else:
-        return "Neutral", score
+from sklearn.feature_extraction.text import TfidfVectorizer
+import matplotlib.pyplot as plt
 
 st.set_page_config(layout="wide")
 
-menu = st.sidebar.radio("Menu", [
-    "Home","Create Event","Build Form","Submit Feedback",
-    "Upload CSV","Dashboard","AI Report","Chatbot"
-])
+# ---------- HEADER ----------
+st.markdown("""
+<div style='background:linear-gradient(90deg,#4f46e5,#9333ea);
+padding:20px;border-radius:10px'>
+<h1 style='color:white;'>🎯 AI Event Intelligence Dashboard</h1>
+<p style='color:white;'>Real insights. Not just charts.</p>
+</div>
+""", unsafe_allow_html=True)
 
-# HOME
-if menu == "Home":
-    st.title("AI Event Feedback System")
+# ---------- FILE ----------
+file = st.file_uploader("Upload Feedback CSV", type=["csv"])
 
-# CREATE EVENT
-elif menu == "Create Event":
-    name = st.text_input("Event Name")
-    if st.button("Create"):
-        c.execute("INSERT INTO events (name) VALUES (?)",(name,))
-        conn.commit()
-        st.success("Created")
+if file:
+    df = pd.read_csv(file)
 
-# BUILD FORM
-elif menu == "Build Form":
-    build_form()
+    st.subheader("📄 Preview")
+    st.dataframe(df.head())
 
-# SUBMIT
-elif menu == "Submit Feedback":
-    events = pd.read_sql("SELECT * FROM events", conn)
-    event = st.selectbox("Event", events['name'])
+    col = st.selectbox("Select Feedback Column", df.columns)
 
-    render_form()
+    # ---------- CLEAN ----------
+    df[col] = df[col].astype(str).str.strip()
+    df = df[df[col] != ""]
 
-    text = st.text_area("Feedback")
-    image = st.file_uploader("Upload Image")
+    # ---------- SAMPLE ----------
+    if len(df) > 100000:
+        df = df.sample(40000)
 
-    if st.button("Submit"):
-        text_en = translate(text)
-        sentiment, score = analyze(text_en)
+    analyzer = SentimentIntensityAnalyzer()
 
-        event_id = events[events['name']==event]['id'].values[0]
+    # ---------- SENTIMENT ----------
+    df["score"] = df[col].apply(lambda x: analyzer.polarity_scores(x)["compound"])
 
-        c.execute("INSERT INTO feedback VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                  (event_id, text, sentiment, score))
-        conn.commit()
+    df["Sentiment"] = pd.cut(
+        df["score"],
+        bins=[-1, -0.05, 0.05, 1],
+        labels=["Negative", "Neutral", "Positive"]
+    )
 
-        st.success("Submitted")
+    # ---------- KPI ----------
+    pos = (df["Sentiment"] == "Positive").sum()
+    neg = (df["Sentiment"] == "Negative").sum()
+    neu = (df["Sentiment"] == "Neutral").sum()
+    total = len(df)
 
-# CSV
-elif menu == "Upload CSV":
-    file = st.file_uploader("Upload")
+    success = (pos / total) * 100
 
-    if file:
-        df = pd.read_csv(file)
+    st.markdown("## 📊 Event Health")
 
-        for text in df.iloc[:, -1]:
-            sentiment, score = analyze(text)
-            c.execute("INSERT INTO feedback VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                      (1, text, sentiment, score))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("😊 Positive", pos)
+    c2.metric("😐 Neutral", neu)
+    c3.metric("😡 Negative", neg)
+    c4.metric("🏆 Success Score", f"{success:.1f}%")
 
-        conn.commit()
-        st.success("Uploaded")
+    # ---------- INTERPRETATION ----------
+    if success > 75:
+        st.success("🔥 Strong Event Performance")
+    elif success > 50:
+        st.warning("⚠ Moderate Performance – Improvement Needed")
+    else:
+        st.error("❌ Poor Event Performance")
 
-# DASHBOARD
-elif menu == "Dashboard":
-    df = pd.read_sql("SELECT * FROM feedback", conn)
+    # ---------- TREND ----------
+    st.markdown("## 📈 Event Trend")
 
-    if len(df):
-        st.bar_chart(df['sentiment'].value_counts())
+    df["group"] = pd.cut(df.index, bins=25)
+    trend = df.groupby("group")["score"].mean()
 
-        df['created_at'] = pd.to_datetime(df['created_at'])
-        trend = df.groupby(df['created_at'].dt.date)['score'].mean()
-        st.line_chart(trend)
+    fig, ax = plt.subplots()
+    ax.plot(trend.values, marker='o')
+    ax.set_title("Sentiment Trend")
 
-        score_val = event_score(df)
-        st.metric("Success Score", f"{score_val}%")
+    st.pyplot(fig)
 
-        alert = check_alert(df)
-        if alert:
-            st.error(alert)
-            send_email(alert)
+    if trend.iloc[-1] > trend.iloc[0]:
+        st.success("📈 Experience improved over time")
+    else:
+        st.error("📉 Experience declined over time")
 
-        # Power BI
-        st.components.v1.iframe("YOUR_POWER_BI_LINK", height=400)
+    # ---------- DISTRIBUTION ----------
+    st.markdown("## 📊 Sentiment Distribution")
+    st.bar_chart(df["Sentiment"].value_counts())
 
-# AI REPORT
-elif menu == "AI Report":
-    df = pd.read_sql("SELECT * FROM feedback", conn)
+    # ---------- REAL ISSUE EXTRACTION ----------
+    st.markdown("## 🔍 Top Issues (From Negative Feedback)")
 
-    if st.button("Generate"):
-        report = generate_report(df)
-        st.write(report)
+    neg_df = df[df["Sentiment"] == "Negative"]
 
-        pdf = generate_pdf(report)
-        with open(pdf,"rb") as f:
-            st.download_button("Download PDF", f)
+    if len(neg_df) > 5:
+        tfidf = TfidfVectorizer(stop_words="english", ngram_range=(1,2), max_features=20)
+        X = tfidf.fit_transform(neg_df[col])
 
-# CHATBOT
-elif menu == "Chatbot":
-    q = st.text_input("Ask")
+        terms = tfidf.get_feature_names_out()
+        scores = X.sum(axis=0).A1
 
-    if st.button("Ask"):
-        st.write(chatbot(q))
+        issues = sorted(zip(terms, scores), key=lambda x: x[1], reverse=True)
 
-    df = pd.read_sql("SELECT * FROM feedback", conn)
-    if len(df)>5:
-        st.info(auto_agent(df))
+        for issue, score in issues[:8]:
+            st.write(f"- {issue}")
+
+    else:
+        st.write("Not enough negative feedback")
+
+    # ---------- STRENGTHS ----------
+    st.markdown("## 💚 What Users Liked")
+
+    pos_df = df[df["Sentiment"] == "Positive"]
+
+    if len(pos_df) > 5:
+        tfidf2 = TfidfVectorizer(stop_words="english", ngram_range=(1,2), max_features=15)
+        X2 = tfidf2.fit_transform(pos_df[col])
+
+        terms2 = tfidf2.get_feature_names_out()
+        scores2 = X2.sum(axis=0).A1
+
+        strengths = sorted(zip(terms2, scores2), key=lambda x: x[1], reverse=True)
+
+        for s, _ in strengths[:6]:
+            st.write(f"- {s}")
+
+    # ---------- REAL RECOMMENDATIONS ----------
+    st.markdown("## 🤖 Actionable Recommendations")
+
+    recommendations = []
+
+    for issue, _ in issues[:5]:
+        if "delay" in issue or "time" in issue:
+            recommendations.append("Improve scheduling and reduce delays")
+
+        elif "food" in issue:
+            recommendations.append("Enhance food quality and service")
+
+        elif "management" in issue or "organize" in issue:
+            recommendations.append("Improve event coordination")
+
+        elif "speaker" in issue:
+            recommendations.append("Improve speaker engagement quality")
+
+    if success > 75:
+        recommendations.append("Maintain current strengths and scale the event")
+
+    for r in list(set(recommendations)):
+        st.write(f"- {r}")
+
+    st.success("✔ Insight generation complete")
